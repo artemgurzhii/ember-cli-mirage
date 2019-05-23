@@ -2,7 +2,6 @@ import Model from 'ember-cli-mirage/orm/model';
 import Collection from 'ember-cli-mirage/orm/collection';
 import PolymorphicCollection from 'ember-cli-mirage/orm/polymorphic-collection';
 import Serializer from 'ember-cli-mirage/serializer';
-import JsonApiSerializer from 'ember-cli-mirage/serializers/json-api-serializer';
 import { pluralize, camelize } from './utils/inflector';
 import assert from './assert';
 
@@ -59,8 +58,7 @@ export default class SerializerRegistry {
       assert(
         !SerializerForResponse
         || (SerializerForResponse.prototype.embed)
-        || (SerializerForResponse.prototype.root)
-        || (new SerializerForResponse() instanceof JsonApiSerializer),
+        || (SerializerForResponse.prototype.root),
         'You cannot have a serializer that sideloads (embed: false) and disables the root (root: false).'
       );
     }
