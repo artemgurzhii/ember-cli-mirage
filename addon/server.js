@@ -5,12 +5,10 @@ import { toCollectionName, toInternalCollectionName } from 'ember-cli-mirage/uti
 import { getModels } from './ember-data';
 import { hasEmberData } from './utils/ember-data';
 import isAssociation from 'ember-cli-mirage/utils/is-association';
-import Pretender from 'pretender';
 import Db from './db';
 import Schema from './orm/schema';
 import assert from './assert';
 import SerializerRegistry from './serializer-registry';
-import RouteHandler from './route-handler';
 import BelongsTo from './orm/associations/belongs-to';
 
 import _pick from 'lodash/pick';
@@ -18,128 +16,6 @@ import _assign from 'lodash/assign';
 import _find from 'lodash/find';
 import _isPlainObject from 'lodash/isPlainObject';
 import _isInteger from 'lodash/isInteger';
-
-/**
- * Creates a new Pretender instance.
- *
- * @method createPretender
- * @param {Server} server
- * @return {Object} A new Pretender instance.
- * @public
- */
-function createPretender(server) {
-  return new Pretender(function() {
-    this.passthroughRequest = function(verb, path, request) {
-      if (server.shouldLog()) {
-        console.log(`Passthrough request: ${verb.toUpperCase()} ${request.url}`);
-      }
-    };
-
-    this.handledRequest = function(verb, path, request) {
-      if (server.shouldLog()) {
-        console.groupCollapsed(
-          `Mirage: [${request.status}] ${verb.toUpperCase()} ${request.url}`
-        );
-        let { requestBody, responseText } = request;
-        let loggedRequest, loggedResponse;
-
-        try {
-          loggedRequest = JSON.parse(requestBody);
-        } catch(e) {
-          loggedRequest = requestBody;
-        }
-
-        try {
-          loggedResponse = JSON.parse(responseText);
-        } catch(e) {
-          loggedResponse = responseText;
-        }
-
-        console.log({
-          request: loggedRequest,
-          response: loggedResponse,
-          raw: request
-        });
-        console.groupEnd();
-      }
-    };
-
-    this.unhandledRequest = function(verb, path) {
-      path = decodeURI(path);
-      assert(
-        `Your Ember app tried to ${verb} '${path}', but there was no route defined to handle this request. Define a route that matches this path in your mirage/config.js file. Did you forget to add your namespace?`
-      );
-    };
-  }, { trackRequests: server.shouldTrackRequests() });
-}
-
-const defaultRouteOptions = {
-  coalesce: false,
-  timing: undefined
-};
-
-/**
-  @hide
-*/
-const defaultPassthroughs = [
-  'http://localhost:0/chromecheckurl', // mobile chrome
-  'http://localhost:30820/socket.io' // electron
-];
-
-/**
-  @hide
-*/
-export { defaultPassthroughs };
-
-/**
- * Determine if the object contains a valid option.
- *
- * @method isOption
- * @param {Object} option An object with one option value pair.
- * @return {Boolean} True if option is a valid option, false otherwise.
- * @private
- */
-function isOption(option) {
-  if (!option || typeof option !== 'object') {
-    return false;
-  }
-
-  let allOptions = Object.keys(defaultRouteOptions);
-  let optionKeys = Object.keys(option);
-  for (let i = 0; i < optionKeys.length; i++) {
-    let key = optionKeys[i];
-    if (allOptions.indexOf(key) > -1) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Extract arguments for a route.
- *
- * @method extractRouteArguments
- * @param {Array} args Of the form [options], [object, code], [function, code]
- * [shorthand, options], [shorthand, code, options]
- * @return {Array} [handler (i.e. the function, object or shorthand), code,
- * options].
- * @private
- */
-function extractRouteArguments(args) {
-  let [ lastArg ] = args.splice(-1);
-  if (isOption(lastArg)) {
-    lastArg = _assign({}, defaultRouteOptions, lastArg);
-  } else {
-    args.push(lastArg);
-    lastArg = defaultRouteOptions;
-  }
-  let t = 2 - args.length;
-  while (t-- > 0) {
-    args.push(undefined);
-  }
-  args.push(lastArg);
-  return args;
-}
 
 /**
   The Mirage server.
@@ -253,41 +129,6 @@ export default class Server {
     */
     this.timing = this.timing || config.timing || 400;
 
-    /**
-      Set to `true` or `false` to explicitly specify logging behavior.
-
-      By default, server responses are logged in non-testing environments. Logging is disabled by default in testing, so as not to clutter CI test runner output.
-
-      For example, to enable logging in tests, write the following:
-
-      ```js
-      test('I can view all users', function() {
-        server.logging = true;
-        server.create('user');
-
-        visit('/users');
-        // ...
-      });
-      ```
-
-      You can also write a custom log message, using the [Pretender server's](#pretender) `handledRequest` hook. See [Mirage's default implementation](https://github.com/samselikoff/ember-cli-mirage/blob/2c31ad15a46e90b357a83b6896c6774fa42c6488/addon/server.js#L25) for an example.
-
-      To override,
-
-      ```js
-      // mirage/config.js
-      export default function() {
-        this.pretender.handledRequest = function(verb, path, request) {
-          let { responseText } = request;
-          // log request and response data
-        }
-      }
-      ```
-
-      @property logging
-      @return {Boolean}
-      @public
-    */
     this.logging = this.logging || undefined;
 
     /**
@@ -309,8 +150,6 @@ export default class Server {
     this.testConfig = this.testConfig || undefined;
 
     this.trackRequests = config.trackRequests;
-
-    this._defineRouteHandlerHelpers();
 
     // Merge models from autogenerated Ember Data models with user defined models
     if (hasEmberData && config.discoverEmberDataModels) {
@@ -336,32 +175,6 @@ export default class Server {
     let hasFactories = this._hasModulesOfType(config, 'factories');
     let hasDefaultScenario = config.scenarios && config.scenarios.hasOwnProperty('default');
 
-    let didOverridePretenderConfig = (config.trackRequests !== undefined) && this.pretender;
-    assert(
-      !didOverridePretenderConfig,
-      'You cannot modify Pretender\'s request tracking once the server is created'
-    );
-
-    /**
-      Mirage uses [pretender.js](https://github.com/trek/pretender) as its xhttp interceptor. In your Mirage config, `this.pretender` refers to the actual Pretender instance, so any config options that work there will work here as well.
-
-      ```js
-      // mirage/config.js
-      export default function() {
-        this.pretender.handledRequest = (verb, path, request) => {
-          console.log(`Your server responded to ${path}`);
-        }
-      };
-      ```
-
-      Refer to [Pretender's docs](https://github.com/pretenderjs/pretender) if you want to change any options on your Pretender instance.
-
-      @property pretender
-      @return {Object} The Pretender instance
-      @public
-    */
-    this.pretender = this.pretender || config.pretender || createPretender(this);
-
     if (config.baseConfig) {
       this.loadConfig(config.baseConfig);
     }
@@ -381,10 +194,6 @@ export default class Server {
       config.scenarios.default(this);
     } else {
       this.loadFixtures();
-    }
-
-    if (config.useDefaultPassthroughs) {
-      this._configureDefaultPassthroughs();
     }
   }
 
@@ -438,75 +247,6 @@ export default class Server {
   loadConfig(config) {
     config.call(this);
     this.timing = this.isTest() ? 0 : (this.timing || 0);
-  }
-
-  /**
-    By default, if your Ember app makes a request that is not defined in your server config, Mirage will throw an error. You can use `passthrough` to whitelist requests, and allow them to pass through your Mirage server to the actual network layer.
-
-    <aside>
-    <p>Note: Put all passthrough config at the bottom of your <code>config.js</code> file, to give your route handlers precedence.</p>
-    </aside>
-
-    To ignore paths on your current host (as well as configured `namespace`), use a leading `/`:
-
-    ```js
-    this.passthrough('/addresses');
-    ```
-
-    You can also pass a list of paths, or call `passthrough` multiple times:
-
-    ```js
-    this.passthrough('/addresses', '/contacts');
-    this.passthrough('/something');
-    this.passthrough('/else');
-    ```
-
-    These lines will allow all HTTP verbs to pass through. If you want only certain verbs to pass through, pass an array as the last argument with the specified verbs:
-
-    ```js
-    this.passthrough('/addresses', ['post']);
-    this.passthrough('/contacts', '/photos', ['get']);
-    ```
-
-    If you want all requests on the current domain to pass through, simply invoke the method with no arguments:
-
-    ```js
-    this.passthrough();
-    ```
-
-    Note again that the current namespace (i.e. any `namespace` property defined above this call) will be applied.
-
-    You can also allow other-origin hosts to passthrough. If you use a fully-qualified domain name, the `namespace` property will be ignored. Use two * wildcards to match all requests under a path:
-
-    ```js
-    this.passthrough('http://api.foo.bar/**');
-    this.passthrough('http://api.twitter.com/v1/cards/**');
-    ```
-
-    In versions of Pretender prior to 0.12, `passthrough` only worked with jQuery >= 2.x. As long as you're on Pretender@0.12 or higher, you should be all set.
-
-    @method passthrough
-    @param {String} [...paths] Any numer of paths to whitelist
-    @param {Array} options Unused
-    @public
-  */
-  passthrough(...paths) {
-    let verbs = ['get', 'post', 'put', 'delete', 'patch', 'options', 'head'];
-    let lastArg = paths[paths.length - 1];
-
-    if (paths.length === 0) {
-      // paths = ['http://localhost:7357'];
-      paths = ['/**', '/'];
-    } else if (Array.isArray(lastArg)) {
-      verbs = paths.pop();
-    }
-
-    verbs.forEach((verb) => {
-      paths.forEach((path) => {
-        let fullPath = this._getFullPath(path);
-        this.pretender[verb](fullPath, this.pretender.passthrough);
-      });
-    });
   }
 
   /**
@@ -773,7 +513,6 @@ export default class Server {
   }
 
   shutdown() {
-    this.pretender.shutdown();
     if (this.environment === 'test') {
       window.server = undefined;
     }
@@ -818,159 +557,9 @@ export default class Server {
    * @private
    * @hide
    */
-  _defineRouteHandlerHelpers() {
-    [['get'], ['post'], ['put'], ['delete', 'del'], ['patch'], ['head'], ['options']].forEach(([verb, alias]) => {
-      this[verb] = (path, ...args) => {
-        let [ rawHandler, customizedCode, options ] = extractRouteArguments(args);
-        return this._registerRouteHandler(verb, path, rawHandler, customizedCode, options);
-      };
-
-      if (alias) {
-        this[alias] = this[verb];
-      }
-    });
-  }
-
-  _serialize(body) {
-    if (typeof body === 'string') {
-      return body;
-    } else {
-      return JSON.stringify(body);
-    }
-  }
-
-  _registerRouteHandler(verb, path, rawHandler, customizedCode, options) {
-
-    let routeHandler = new RouteHandler({
-      schema: this.schema,
-      verb, rawHandler, customizedCode, options, path,
-      serializerOrRegistry: this.serializerOrRegistry
-    });
-
-    let fullPath = this._getFullPath(path);
-    let timing = options.timing !== undefined ? options.timing : (() => this.timing);
-
-    return this.pretender[verb](
-      fullPath,
-      (request) => {
-        return routeHandler.handle(request)
-          .then(mirageResponse => {
-            let [ code, headers, response ] = mirageResponse;
-
-            return [ code, headers, this._serialize(response) ];
-          });
-      },
-      timing
-    );
-  }
-
-  /**
-   *
-   * @private
-   * @hide
-   */
   _hasModulesOfType(modules, type) {
     let modulesOfType = modules[type];
     return modulesOfType ? Object.keys(modulesOfType).length > 0 : false;
-  }
-
-  /**
-   * Builds a full path for Pretender to monitor based on the `path` and
-   * configured options (`urlPrefix` and `namespace`).
-   *
-   * @private
-   * @hide
-   */
-  _getFullPath(path) {
-    path = path[0] === '/' ? path.slice(1) : path;
-    let fullPath = '';
-    let urlPrefix = this.urlPrefix ? this.urlPrefix.trim() : '';
-    let namespace = '';
-
-    // if there is a urlPrefix and a namespace
-    if (this.urlPrefix && this.namespace) {
-      if (this.namespace[0] === '/' && this.namespace[this.namespace.length - 1] === '/') {
-        namespace = this.namespace.substring(0, this.namespace.length - 1).substring(1);
-      }
-
-      if (this.namespace[0] === '/' &&  this.namespace[this.namespace.length - 1] !== '/') {
-        namespace = this.namespace.substring(1);
-      }
-
-      if (this.namespace[0] !== '/' &&  this.namespace[this.namespace.length - 1] === '/') {
-        namespace = this.namespace.substring(0, this.namespace.length - 1);
-      }
-
-      if (this.namespace[0] !== '/' &&  this.namespace[this.namespace.length - 1] !== '/') {
-        namespace = this.namespace;
-      }
-    }
-
-    // if there is a namespace and no urlPrefix
-    if (this.namespace && !this.urlPrefix) {
-      if (this.namespace[0] === '/' && this.namespace[this.namespace.length - 1] === '/') {
-        namespace = this.namespace.substring(0, this.namespace.length - 1);
-      }
-
-      if (this.namespace[0] === '/' &&  this.namespace[this.namespace.length - 1] !== '/') {
-        namespace = this.namespace;
-      }
-
-      if (this.namespace[0] !== '/' &&  this.namespace[this.namespace.length - 1] === '/') {
-        let namespaceSub = this.namespace.substring(0, this.namespace.length - 1);
-        namespace = `/${namespaceSub}`;
-      }
-
-      if (this.namespace[0] !== '/' &&  this.namespace[this.namespace.length - 1] !== '/') {
-        namespace = `/${this.namespace}`;
-      }
-    }
-
-    // if no namespace
-    if (!this.namespace) {
-      namespace = '';
-    }
-
-    // check to see if path is a FQDN. if so, ignore any urlPrefix/namespace that was set
-    if (/^https?:\/\//.test(path)) {
-      fullPath += path;
-    } else {
-      // otherwise, if there is a urlPrefix, use that as the beginning of the path
-      if (urlPrefix.length) {
-        fullPath += (urlPrefix[urlPrefix.length - 1] === '/') ? urlPrefix : `${urlPrefix}/`;
-      }
-
-      // add the namespace to the path
-      fullPath += namespace;
-
-      // add a trailing slash to the path if it doesn't already contain one
-      if (fullPath[fullPath.length - 1] !== '/') {
-        fullPath += '/';
-      }
-
-      // finally add the configured path
-      fullPath += path;
-
-      // if we're making a same-origin request, ensure a / is prepended and
-      // dedup any double slashes
-      if (!/^https?:\/\//.test(fullPath)) {
-        fullPath = `/${fullPath}`;
-        fullPath = fullPath.replace(/\/+/g, '/');
-      }
-    }
-
-    return fullPath;
-  }
-
-  /**
-   *
-   * @private
-   * @hide
-   */
-  _configureDefaultPassthroughs() {
-    defaultPassthroughs.forEach((passthroughUrl) => {
-      this.passthrough(passthroughUrl);
-    });
   }
 
   /**

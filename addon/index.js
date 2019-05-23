@@ -1,12 +1,9 @@
 import Factory from './factory';
 import trait from './trait';
 import association from './association';
-import Response from './response';
 import Model from './orm/model';
 import Collection from './orm/collection';
 import Serializer from './serializer';
-import ActiveModelSerializer from './serializers/active-model-serializer';
-import JSONAPISerializer from './serializers/json-api-serializer';
 import RestSerializer from './serializers/rest-serializer';
 import HasMany from './orm/associations/has-many';
 import BelongsTo from './orm/associations/belongs-to';
@@ -30,12 +27,9 @@ export {
   Factory,
   trait,
   association,
-  Response,
   Model,
   Collection,
   Serializer,
-  ActiveModelSerializer,
-  JSONAPISerializer,
   RestSerializer,
   hasMany,
   belongsTo,
